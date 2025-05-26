@@ -7,6 +7,8 @@
 #include <vector>
 #include <cstdlib>
 #include <limits>
+#include <cstring>
+#include <fstream>
 
 using namespace std;
 
@@ -231,192 +233,298 @@ void mindCipherInterface() {
     }
 }
 
-// =================== Puzzle Dungeon Game ===================
 
-struct Puzzle {
-    string question;
-    int answer;
-};
+// Hangman Game
 
-// Game state for resume
-bool puzzleResumeAvailable = false;
-int puzzleResumeIndex = 0;
-int puzzleResumeScore = 0;
-int puzzleResumeLives = 3;
-int puzzleResumeTime = 60;
+#define MAX 100
+const int MAX_WRONG = 6;
+string words[] = {"program", "science", "variable", "function", "computer"};
 
-Puzzle puzzles[10] = {
-    {"What is 12 + 23?", 35},
-    {"What is 7 * 6?", 42},
-    {"What is the square of 9?", 81},
-    {"Solve: (50 / 5) + 8", 18},
-    {"What is 100 - 45?", 55},
-    {"What is 11 * 11?", 121},
-    {"If x = 5, what is x^3?", 125},
-    {"What is 6 * 7?", 42},
-    {"What is 9 + 10?", 19},
-    {"Solve: 5^2 + 2^3", 33}
-};
-
+// Clear screen helper
 void clearScreens() {
+#ifdef _WIN32
     system("cls");
+#else
+    system("clear");
+#endif
 }
 
-void delays(int ms) {
-    Sleep(ms);
-}
+// Stack for wrong guesses
+struct Stack {
+    char items[MAX];
+    int top;
 
-void showPuzzleInstructions() {
-    clearScreen();
-    cout << "========== Instructions ==========\n";
-    cout << "1. Solve 3 puzzles to escape.\n";
-    cout << "2. 3 lives only. Wrong answer = lose 1 life.\n";
-    cout << "3. 60 seconds total to play.\n";
-    cout << "4. Type 'QUIT' to pause anytime and resume later.\n";
-    cout << "5. Type your answer directly as a number.\n";
-    cout << "===================================\n";
-    cout << "Press Enter to go back...";
-    cin.ignore();
-    cin.get();
-}
-
-void puzzleGameOver(bool won, int score) {
-    clearScreen();
-    if (won) {
-        cout << "?? You escaped the dungeon!\n";
-        cout << "Puzzles solved: " << score << "\n";
-    } else {
-        cout << "?? Game Over! You're trapped forever.\n";
-        cout << "Puzzles solved: " << score << "\n";
-    }
-    puzzleResumeAvailable = false;
-    system("pause");
-}
-
-bool askPuzzle(Puzzle p, int &lives, int &score, int &timeLeft, int index) {
-    string input;
-    time_t start = time(NULL);
-
-    while (true) {
-        clearScreen();
-        cout << "Time Left: " << timeLeft << "s | Lives: " << lives << " | Solved: " << score << "\n\n";
-        cout << "Puzzle " << (index + 1) << ": " << p.question << "\n\n";
-        cout << "[QUIT]                                [ANSWER]: " << input;
-
-        delays(300);
-
-        time_t now = time(NULL);
-        if (now - start >= 1) {
-            timeLeft--;
-            start = now;
-        }
-
-        if (timeLeft <= 0) {
-            return false;
-        }
-
-        if (_kbhit()) {
-            char ch = _getch();
-            if (ch == '\r') break;
-            if (ch == '\b' && input.length() > 0) input.erase(input.length() - 1);
-            else if (isprint(ch)) input += ch;
-        }
-    }
-
-    if (input == "QUIT") {
-        puzzleResumeAvailable = true;
+    void init() { top = -1; }
+    bool isEmpty() { return top == -1; }
+    bool isFull() { return top == MAX - 1; }
+    void push(char ch) { if (!isFull()) items[++top] = ch; }
+    char pop() { return (!isEmpty()) ? items[top--] : '\0'; }
+    char peek() { return (!isEmpty()) ? items[top] : '\0'; }
+    void display() { for (int i = 0; i <= top; i++) cout << items[i] << " "; }
+    bool contains(char ch) {
+        for (int i = 0; i <= top; i++)
+            if (items[i] == ch) return true;
         return false;
     }
+};
 
-    int userAns = atoi(input.c_str());
-    if (userAns == p.answer) {
-        cout << "\n? Correct!\n";
-        score++;
-    } else {
-        cout << "\n? Wrong! Correct answer: " << p.answer << "\n";
-        lives--;
+// Queue for correct guesses
+struct Queue {
+    char items[MAX];
+    int front, rear;
+
+    void init() { front = rear = -1; }
+    bool isEmpty() { return front == -1; }
+    bool isFull() { return (rear + 1) % MAX == front; }
+    void enqueue(char ch) {
+        if (isFull()) return;
+        if (isEmpty()) front = rear = 0;
+        else rear = (rear + 1) % MAX;
+        items[rear] = ch;
     }
+    bool contains(char ch) {
+        if (isEmpty()) return false;
+        int i = front;
+        while (true) {
+            if (items[i] == ch) return true;
+            if (i == rear) break;
+            i = (i + 1) % MAX;
+        }
+        return false;
+    }
+    void loadFromString(const string& s) {
+        for (int i = 0; i < s.length(); i++) enqueue(s[i]);
+    }
+    void display() {
+        if (isEmpty()) return;
+        int i = front;
+        while (true) {
+            cout << items[i] << " ";
+            if (i == rear) break;
+            i = (i + 1) % MAX;
+        }
+    }
+};
 
-    delays(1000);
+// Draw hangman
+void drawHangman(int wrong) {
+    string hangman[] = {
+        "\n\n\n\n\n\n",
+        "   \n   \n   \n   \n   \n___|___\n",
+        "   _______\n   |\n   |\n   |\n   |\n___|___\n",
+        "   _______\n   |     |\n   |     O\n   |\n   |\n___|___\n",
+        "   _______\n   |     |\n   |     O\n   |     |\n   |\n___|___\n",
+        "   _______\n   |     |\n   |     O\n   |    /|\\\n   |\n___|___\n",
+        "   _______\n   |     |\n   |     O\n   |    /|\\\n   |    / \\\n___|___\n"
+    };
+    cout << hangman[wrong] << endl;
+}
+
+// Show word progress
+void showProgress(string word, Queue q) {
+    for (int i = 0; i < word.length(); ++i) {
+        if (q.contains(word[i])) cout << word[i];
+        else cout << "_";
+        cout << " ";
+    }
+    cout << "\n";
+}
+
+// Check if word is complete
+bool isWordGuessed(string word, Queue q) {
+    for (int i = 0; i < word.length(); ++i)
+        if (!q.contains(word[i])) return false;
     return true;
 }
 
-void startPuzzleDungeon(bool resume = false) {
-    clearScreens();
-    cout << "?? Entering Puzzle Dungeon...\n";
+// Show instructions
+void showInstructions() {
+    cout << "\n?? INSTRUCTIONS:\n";
+    cout << "---------------------------\n";
+    cout << "1. Guess the hidden word letter-by-letter.\n";
+    cout << "2. You lose after 6 wrong guesses (full hangman).\n";
+    cout << "3. Type 'QUIT' anytime to pause and save the game.\n";
+    cout << "4. Stack stores wrong guesses. Queue stores correct ones.\n";
+    cout << "---------------------------\n\n";
+}
 
-    // Shuffle puzzles
-    for (int i = 0; i < 10; i++) {
-        int j = rand() % 10;
-        Puzzle temp = puzzles[i];
-        puzzles[i] = puzzles[j];
-        puzzles[j] = temp;
+// Save game to file
+void saveGame(string word, Queue& correct, Stack& wrong, int wrongCount) {
+    ofstream file("resume_hangman.txt");
+    if (!file) {
+        cout << "Error saving game!\n";
+        return;
+    }
+    file << word << "\n";
+    // Save correct letters
+    for (int i = 0; i < word.length(); i++) {
+        if (correct.contains(word[i]))
+            file << word[i];
+    }
+    file << "\n";
+    // Save wrong letters
+    for (int i = 0; i <= wrong.top; i++)
+        file << wrong.items[i];
+    file << "\n" << wrongCount << "\n";
+    file.close();
+    cout << "\n?? Game paused and saved.\n";
+}
+
+// Load game from file
+bool loadGame(string& word, Queue& correct, Stack& wrong, int& wrongCount) {
+    ifstream file("resume_hangman.txt");
+    if (!file) return false;
+
+    string correctStr, wrongStr;
+    file >> word >> correctStr >> wrongStr >> wrongCount;
+
+    correct.init();
+    correct.loadFromString(correctStr);
+
+    wrong.init();
+    for (int i = 0; i < wrongStr.length(); i++) wrong.push(wrongStr[i]);
+
+    file.close();
+    return true;
+}
+
+// Remove resume file
+void clearResumes() {
+    remove("resume_hangman.txt");
+}
+
+// Play game
+void playGame(bool resume = false) {
+    clearScreen();  // Clear before showing game interface
+
+    string word;
+    Queue correct;
+    Stack wrong;
+    correct.init();
+    wrong.init();
+    int wrongCount = 0;
+
+    if (resume) {
+        if (!loadGame(word, correct, wrong, wrongCount)) {
+            cout << "? No paused game found.\n";
+            cout << "\nPress Enter to return to menu...";
+            cin.ignore();
+            cin.get();
+            return;
+        } else {
+            cout << "?? Resuming previous game...\n";
+        }
+    } else {
+        srand((unsigned)time(0));
+        word = words[rand() % 5];
     }
 
-    int score = resume ? puzzleResumeScore : 0;
-    int lives = resume ? puzzleResumeLives : 3;
-    int totalToSolve = 3;
-    int timeLeft = resume ? puzzleResumeTime : 60;
-    int index = resume ? puzzleResumeIndex : 0;
+    while (wrongCount < MAX_WRONG) {
+        drawHangman(wrongCount);
+        cout << "Word: ";
+        showProgress(word, correct);
+        cout << "Wrong letters: ";
+        wrong.display();
+        cout << "\n";
 
-    bool quit = false;
-    for (; index < 10 && lives > 0 && score < totalToSolve && timeLeft > 0; index++) {
-        if (!askPuzzle(puzzles[index], lives, score, timeLeft, index)) {
-            if (puzzleResumeAvailable) {
-                puzzleResumeIndex = index;
-                puzzleResumeLives = lives;
-                puzzleResumeScore = score;
-                puzzleResumeTime = timeLeft;
-                cout << "\nGame Paused. You can resume it later.\n";
-                system("pause");
-            }
-            break;
+        cout << "[Type 'QUIT' to pause and save]\n";
+        cout << "? QUIT      ? Guess a letter: ";
+        string input;
+        cin >> input;
+
+        if (input == "QUIT" || input == "quit") {
+            saveGame(word, correct, wrong, wrongCount);
+            cout << "\nPress Enter to return to menu...";
+            cin.ignore();
+            cin.get();
+            clearScreen();  // Clear game interface before returning to menu
+            return;
+        }
+
+        char ch = tolower(input[0]);
+        if (!isalpha(ch)) {
+            cout << "? Invalid input.\n";
+            continue;
+        }
+
+        if (correct.contains(ch) || wrong.contains(ch)) {
+            cout << "?? Already guessed.\n";
+            continue;
+        }
+
+        if (word.find(ch) != string::npos) {
+            correct.enqueue(ch);
+            cout << "? Correct!\n";
+        } else {
+            wrong.push(ch);
+            wrongCount++;
+            cout << "? Wrong!\n";
+        }
+
+        if (isWordGuessed(word, correct)) {
+            cout << "\n?? You guessed the word: " << word << "\n";
+            clearResumes();  // remove resume if game complete
+            cout << "\nPress Enter to return to menu...";
+            cin.ignore();
+            cin.get();
+            clearScreen();  // Clear game interface before returning to menu
+            return;
         }
     }
 
-    if (!puzzleResumeAvailable)
-        puzzleGameOver(score >= totalToSolve, score);
+    drawHangman(wrongCount);
+    cout << "\n?? Game Over! The word was: " << word << "\n";
+    clearResumes();  // remove resume if failed
+    cout << "\nPress Enter to return to menu...";
+    cin.ignore();
+    cin.get();
+    clearScreen();  // Clear game interface before returning to menu
 }
 
-void  puzzleDungeonInterface() {
-    while (true) {
-        clearScreen();
-         cout << "\n==============================\n";
-    cout << "         Welcome to Puzzle Dungeon\n";
-         cout << "==============================\n";
-        cout << "1. Start New Game\n";
+// Main menu
+void Hangman() {
+    int choice;
+    do {
+        clearScreen();  // Clear before showing menu
+        cout << "\n==============================\n";
+        cout << "           Hangman\n";
+        cout << "==============================\n";
+        cout << "1. New Game\n";
         cout << "2. Resume Game\n";
         cout << "3. Instructions\n";
         cout << "4. Exit\n";
-        cout << "Choose option: ";
-        int opt;
-        cin >> opt;
+        cout << "Enter your choice: ";
+        cin >> choice;
 
-        if (opt == 1) {
-            puzzleResumeAvailable = false;
-            startPuzzleDungeon(false);
-        } else if (opt == 2) {
-            if (!puzzleResumeAvailable) {
-                cout << "No game was paused!\n";
-                system("pause");
-            } else {
-                startPuzzleDungeon(true);
-            }
-        } else if (opt == 3) {
-            cin.ignore();
-            showPuzzleInstructions();
-        } else if (opt == 4) {
+        switch (choice) {
+        case 1:
+            playGame(false);
             break;
-        } else {
-            cout << "Invalid!\n";
-            system("pause");
+        case 2:
+            playGame(true);
+            break;
+        case 3:
+            clearScreen();
+            showInstructions();
+            cout << "\nPress Enter to return to menu...";
+            cin.ignore();
+            cin.get();
+            break;
+        case 4:
+            cout << "?? Exiting... Thanks for playing!\n";
+            break;
+        default:
+            cout << "? Invalid option. Try again.\n";
+            cout << "\nPress Enter to continue...";
+            cin.ignore();
+            cin.get();
+            break;
         }
-    }
+    } while (choice != 4);
 }
 
-int mainOfPuzzle() {
-    srand(time(0));
-     puzzleDungeonInterface();
+int mains() {
+    Hangman();
     return 0;
 }
 
@@ -428,7 +536,7 @@ void showLauncherMenu() {
     cout << "         G2 CONSOLE\n";
     cout << "===========================\n";
     cout << "1. Play MindCipher\n";
-    cout << "2. Play Puzzle Dungeon\n";
+    cout << "2. Play Hangman\n";
     cout << "3. Exit\n";
     cout << "Choose an option: ";
 }
@@ -443,8 +551,8 @@ int main() {
             case 1:
                 mindCipherInterface();
                 break;
-            case 2:
-                puzzleDungeonInterface();
+           case 2:
+                Hangman();
                 break;
             case 3:
                 cout << "Thanks for playing! Goodbye.\n";
@@ -455,4 +563,8 @@ int main() {
         }
     }
 }
+
+
+
+
 
